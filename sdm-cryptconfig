@@ -101,6 +101,10 @@ sdm-cryptconfig has several command line switches, all of which are optional
 * --sshtimeout timeout -- Specify initramfs SSH timeout [Default: 3600]
 * --tries n -- Specify number of unlock tries before giving up [Default: 0 (infinite)]
 * --unique-ssh -- Use a different SSH host key in initramfs than the host OS SSH key
+* --wifi-ssid ssid -- WiFi network SSID
+* --wifi-psk psk -- WiFi network passphrase
+* --wifi-country code -- Two-letter country code for WiFi (e.g., RU)
+* --wifi-driver driver -- WiFi driver to include [Default: brcmfmac]
 
 The network configuration switches (dns, gateway, hostname, ipaddr, and mask) are only needed
 and should only be used if you know that the system is unable to get an IP address and network
@@ -299,7 +303,7 @@ EOF
 
 function parsecmd() {
     local cmd="$1" args="$2"
-    local longopts="authorized-keys:,crypto:,dns:,gateway:,help,hostname:,ipaddr:,keyfile:,mapper:,mask:,netmask:,no-last-reboot,nopwd,ssh,sshbash,sshport:,sshtimeout:,reboot,sdm,tries:,unique-ssh"
+    local longopts="authorized-keys:,crypto:,dns:,gateway:,help,hostname:,ipaddr:,keyfile:,mapper:,mappername:,mask:,netmask:,no-last-reboot,nopwd,ssh,sshbash,sshport:,sshtimeout:,reboot,sdm,tries:,unique-ssh,wifi-ssid:,wifi-psk:,wifi-country:,wifi-driver:"
 
     OARGS=$(getopt -o h --longoptions $longopts -n 'sdm' -- $args)
     [ $? -ne 0 ] && errexit "? $cmd: Unable to parse command"
@@ -328,9 +332,13 @@ function parsecmd() {
 	    --sdm)             xsdm=1       ; shift 1 ;;
 	    --tries)           xtries=$2    ; shift 2 ;;
 	    --unique-ssh)      xunique=1    ; shift 1 ;;
+	    --wifi-ssid)       xwifissid=$2 ; shift 2 ;;
+	    --wifi-psk)        xwifipsk=$2  ; shift 2 ;;
+	    --wifi-country)    xwificountry=$2 ; shift 2 ;;
+	    --wifi-driver)     xwifidriver=$2 ; shift 2 ;;
 	    --)                shift ; break ;;
 	    -h|--help)         printhelp ; shift ; exit ;;
-	    *) errexit "? $0: Internal error" ;;
+	    *)                 errexit "? $0: Internal error" ;;
 	esac
     done
 
@@ -342,6 +350,105 @@ function parsecmd() {
     fi
     [[ $xnopwd -eq 1 ]] && [[ "$xkeyfile" == "" ]] && errexit "? --nopwd requires --keyfile"
     [[ "$xtries" != "" ]] && checknumeric $xtries "--tries"
+
+    # Validate WiFi parameters if any are provided
+    if [ ! -z "$xwifissid" ] || [ ! -z "$xwifipsk" ] || [ ! -z "$xwificountry" ]; then
+        [ -z "$xwifissid" ] && errexit "? --wifi-ssid is required when using WiFi"
+        [ -z "$xwifipsk" ] && errexit "? --wifi-psk is required when using WiFi"
+        [ -z "$xwificountry" ] && errexit "? --wifi-country is required when using WiFi"
+        [ -z "$xwifidriver" ] && xwifidriver="brcmfmac"
+        xwifi=1
+    fi
+}
+
+function configure_pi5_wifi_firmware() {
+    # RPi 5 uses a different firmware layout. Create symlinks for brcmfmac.
+    if [ -f /proc/device-tree/model ] && grep -q "Raspberry Pi 5" /proc/device-tree/model; then
+        echo "> Configuring WiFi firmware for Raspberry Pi 5"
+        FIRMWARE_PATH="/lib/firmware"
+        CYPRESS_PATH="$FIRMWARE_PATH/cypress"
+        BRCM_PATH="$FIRMWARE_PATH/brcm"
+
+        # Ensure target directory exists
+        mkdir -p "$BRCM_PATH"
+        mkdir -p "$CYPRESS_PATH"
+
+        # --- BIN ---
+        BIN_SYMLINK="$CYPRESS_PATH/cyfmac43455-sdio.bin"
+        if [ -L "$BIN_SYMLINK" ]; then
+            REAL_BIN=$(readlink -f "$BIN_SYMLINK")
+            if [ -f "$REAL_BIN" ]; then
+                rm -f "$BIN_SYMLINK"
+                cp -f "$REAL_BIN" "$BIN_SYMLINK"
+            fi
+        fi
+        if [ ! -f "$BIN_SYMLINK" ]; then
+            for loc in /usr/lib/firmware/cypress/cyfmac43455-sdio.bin /lib/firmware/cypress/cyfmac43455-sdio.bin; do
+                if [ -f "$loc" ]; then
+                    rm -f "$BIN_SYMLINK"
+                    cp -f "$loc" "$BIN_SYMLINK"
+                fi
+            done
+        fi
+
+        # --- CLM_BLOB ---
+        CLM_SYMLINK="$CYPRESS_PATH/cyfmac43455-sdio.clm_blob"
+        if [ -L "$CLM_SYMLINK" ]; then
+            REAL_CLM=$(readlink -f "$CLM_SYMLINK")
+            if [ -f "$REAL_CLM" ]; then
+                rm -f "$CLM_SYMLINK"
+                cp -f "$REAL_CLM" "$CLM_SYMLINK"
+            fi
+        fi
+        if [ ! -f "$CLM_SYMLINK" ]; then
+            for loc in /usr/lib/firmware/cypress/cyfmac43455-sdio.clm_blob /lib/firmware/cypress/cyfmac43455-sdio.clm_blob; do
+                if [ -f "$loc" ]; then
+                    rm -f "$CLM_SYMLINK"
+                    cp -f "$loc" "$CLM_SYMLINK"
+                fi
+            done
+        fi
+
+        # --- TXT ---
+        if [ ! -f "$BRCM_PATH/brcmfmac43455-sdio.txt" ]; then
+            touch "$BRCM_PATH/brcmfmac43455-sdio.txt"
+        fi
+
+        # --- Симлинки в brcm ---
+        ln -sf ../cypress/cyfmac43455-sdio.bin "$BRCM_PATH/brcmfmac43455-sdio.raspberrypi,5-model-b.bin"
+        ln -sf ../cypress/cyfmac43455-sdio.bin "$BRCM_PATH/brcmfmac43455-sdio.bin"
+        ln -sf ../cypress/cyfmac43455-sdio.clm_blob "$BRCM_PATH/brcmfmac43455-sdio.raspberrypi,5-model-b.clm_blob"
+        ln -sf ../cypress/cyfmac43455-sdio.clm_blob "$BRCM_PATH/brcmfmac43455-sdio.clm_blob"
+        ln -sf brcmfmac43455-sdio.txt "$BRCM_PATH/brcmfmac43455-sdio.raspberrypi,5-model-b.txt"
+    fi
+}
+
+function setup_wifi_unblock() {
+    echo "> Setting WiFi country to '$xwificountry' via raspi-config"
+    raspi-config nonint do_wifi_country "$xwificountry" >/dev/null 2>&1
+
+    echo "> Masking systemd-rfkill service to prevent re-blocking"
+    systemctl mask systemd-rfkill.service >/dev/null 2>&1
+
+    echo "> Creating hooks to unblock WiFi in initramfs"
+    # Hook to copy rfkill binary
+    cat > /etc/initramfs-tools/hooks/unblock-wifi <<'HOOKEOF'
+#!/bin/sh
+set -e
+. /usr/share/initramfs-tools/hook-functions
+copy_exec /usr/sbin/rfkill /usr/sbin
+HOOKEOF
+    chmod +x /etc/initramfs-tools/hooks/unblock-wifi
+
+    echo "> Creating script to unblock WiFi in initramfs"
+    cat > /etc/initramfs-tools/scripts/init-premount/01-unblock-wifi <<'SCRIPTEOF'
+#!/bin/sh
+if [ -x /usr/sbin/rfkill ]; then
+    echo "initramfs-unblock-wifi: Unblocking all wifi devices..." > /dev/console
+    /usr/sbin/rfkill unblock all
+fi
+SCRIPTEOF
+    chmod +x /etc/initramfs-tools/scripts/init-premount/01-unblock-wifi
 }
 
 function doconfiginitramfs() {
@@ -349,7 +456,11 @@ function doconfiginitramfs() {
 
     # These both need to be set on initramfs-tools 0.142+rpt1 and earlier. This assumes OK. Remove uncommented line for earlier initramfs-tools
     echo "> Update initramfs configuration for 'MODULES=most' and 'update_initramfs=all'"
-    sed -i "s/^MODULES=dep/MODULES=most/" /etc/initramfs-tools/initramfs.conf
+    if grep -q "^MODULES=" /etc/initramfs-tools/initramfs.conf; then
+        sed -i 's/^MODULES=.*/MODULES=most/' /etc/initramfs-tools/initramfs.conf
+    else
+        echo "MODULES=most" >> /etc/initramfs-tools/initramfs.conf
+    fi
 #*  sed -i "s/^update_initramfs=yes/update_initramfs=all/" /etc/initramfs-tools/update-initramfs.conf
 
     echo "> Create /usr/bin/sdmluksunlock; runs in initramfs to unlock rootfs"
@@ -422,14 +533,27 @@ aps=\$(ps e | grep trydisks | grep -v grep | awk '{print \$1}')
 exit
 EOF
     chmod 755 /usr/bin/sdmluksunlock
-    echo "> Create /etc/initramfs-tools/hooks/luks-hooks"
+    echo "> Create luks hook to copy sdmcryptfs and keyfile to initramfs"
     [ "$xkeyfile" != "" ] && kcmd="copy_file text /etc/sdm/assets/cryptroot/$xkeyfile /etc/$xkeyfile"
     [ $xnopwd -eq 1 ] && knopwd="copy_file text /usr/local/bin/sdmnull /etc/sdmnopwd"
-    cat > /etc/initramfs-tools/hooks/luks-hooks <<EOF
-#!/bin/sh -e
-PREREQS=""
-case "\$1" in
-        prereqs) echo "\${PREREQS}"; exit 0;;
+    cat > /etc/initramfs-tools/hooks/luks-hooks <<'EOF'
+#!/bin/sh
+#
+# Copy sdmcryptfs and sdmkeyfile to initramfs for sdm LUKS support
+#
+
+PREREQ=""
+
+prereqs()
+{
+    echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+    prereqs
+    exit 0
+    ;;
 esac
 
 . /usr/share/initramfs-tools/hook-functions
@@ -448,10 +572,36 @@ copy_file text /usr/bin/sdmluksunlock || true
 copy_file text /etc/mappername
 copy_file text /etc/sdmcrypto
 copy_file text /etc/sdmkeyfile
+
+if [ -f /etc/sdmkeyfile ] && [ "$(cat /etc/sdmkeyfile)" != "" ]; then
+    mkdir -p "$DESTDIR/etc/sdm/assets/cryptroot"
+    cp "/etc/sdm/assets/cryptroot/$(cat /etc/sdmkeyfile)" "$DESTDIR/etc/sdm/assets/cryptroot"
+fi
+
+# Copy keyfile-related stuff
+if [ -f /usr/bin/sdmluksunlock ]; then
+    copy_exec /usr/bin/sdmluksunlock /usr/bin
+else
+    # In case not there (e.g., if sdm not used), create a stub so crypttab works
+    echo '#!/bin/sh\nexit 1' > "$DESTDIR/usr/bin/sdmluksunlock"
+    chmod 755 "$DESTDIR/usr/bin/sdmluksunlock"
+fi
+
+copy_exec /usr/bin/findfs /usr/bin
 $kcmd
 $knopwd
 exit 0
 EOF
+
+    if [ $xnopwd -eq 0 ]; then
+        cat >> /etc/initramfs-tools/hooks/luks-hooks <<'EOF'
+
+# When password used, copy sdm-getty to initramfs so passphrase can be entered
+if [ -f /usr/local/bin/sdm-getty ]; then
+    copy_exec /usr/local/bin/sdm-getty /usr/bin
+fi
+EOF
+    fi
     chmod 755 /etc/initramfs-tools/hooks/luks-hooks
 
     echo "> Update /etc/initramfs-tools/modules to include crypto '$xcrypto' modules"
@@ -498,13 +648,164 @@ EOF
 	#echo "ipstatement: $ips"
 	echo "$ips" >> /etc/initramfs-tools/initramfs.conf
     fi
+
+    if [ $xwifi -eq 1 ]
+    then
+        # Prepare Pi5 firmware before doing anything else
+        configure_pi5_wifi_firmware
+        setup_wifi_unblock
+
+        echo "> Add required kernel modules for WiFi to initramfs"
+        for mod in brcmfmac brcmfmac-wcc brcmutil cfg80211; do
+            grep -q "^$mod\$" /etc/initramfs-tools/modules || echo "$mod" >> /etc/initramfs-tools/modules
+        done
+
+        echo "> Creating WiFi hook for initramfs"
+        cat > /etc/initramfs-tools/hooks/wifi <<EOF
+#!/bin/sh
+
+PREREQ=""
+prereqs()
+{
+    echo "\$PREREQ"
+}
+
+case \$1 in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# Copy wireless tools
+copy_exec /sbin/iwconfig
+copy_exec /sbin/wpa_supplicant
+copy_exec /sbin/wpa_cli
+
+# Copy firmware
+mkdir -p \$DESTDIR/lib/firmware
+if [ -d /lib/firmware/brcm ]; then cp -a /lib/firmware/brcm \$DESTDIR/lib/firmware/; fi
+if [ -d /lib/firmware/cypress ]; then cp -a /lib/firmware/cypress \$DESTDIR/lib/firmware/; fi
+
+# Copy kernel modules. Dependencies should be handled automatically.
+manual_add_modules $xwifidriver
+manual_add_modules mac80211
+
+# Create wpa_supplicant configuration
+mkdir -p \$DESTDIR/etc/wpa_supplicant
+cat > \$DESTDIR/etc/wpa_supplicant/wpa_supplicant.conf <<WPACFG
+ctrl_interface=/var/run/wpa_supplicant
+update_config=1
+country=$xwificountry
+
+network={
+    ssid="$xwifissid"
+    psk="$xwifipsk"
+    key_mgmt=WPA-PSK
+}
+WPACFG
+EOF
+        chmod +x /etc/initramfs-tools/hooks/wifi
+
+        echo "> Creating WiFi script for initramfs"
+        cat > /etc/initramfs-tools/scripts/init-premount/wifi <<EOF
+#!/bin/sh
+
+PREREQ=""
+prereqs()
+{
+    echo "\$PREREQ"
+}
+
+case \$1 in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+log() {
+    echo "initramfs-wifi: \$1" > /dev/console
+}
+
+log "Loading WiFi modules..."
+modprobe $xwifidriver
+
+if ! lsmod | grep -q "${xwifidriver//-/_}"; then
+    log "Error: ${xwifidriver} module failed to load."
+    dmesg | grep "${xwifidriver}" > /dev/console
+    exit 0
+fi
+log "${xwifidriver} module loaded."
+
+# Give udev time to react to the new modules
+[ -x /sbin/udevadm ] && udevadm settle
+
+log "Waiting for network device for up to 20 seconds..."
+# Wait for interface to appear, max 20 seconds
+WLAN_IFACE=""
+for i in \$(seq 1 20); do
+    for iface in \$(ls /sys/class/net 2>/dev/null); do
+        if [ -d "/sys/class/net/\$iface/wireless" ]; then
+            WLAN_IFACE=\$iface
+            log "Found wireless interface: \$WLAN_IFACE"
+            break 2
+        fi
+    done
+    [ ! -z "\$WLAN_IFACE" ] && break
+    sleep 1
+done
+
+if [ -z "\$WLAN_IFACE" ]; then
+    log "Error: No wireless interface found. Dumping debug info."
+    log "lsmod output:"
+    lsmod > /dev/console
+    log "dmesg for brcmfmac:"
+    dmesg | grep -i brcmfmac > /dev/console
+    log "Firmware files in initramfs:"
+    ls -lR /lib/firmware/brcm /lib/firmware/cypress > /dev/console 2>&1
+    exit 0 # Don't block boot
+fi
+
+log "Bringing up \$WLAN_IFACE..."
+ip link set \$WLAN_IFACE up
+if [ \$? -ne 0 ]; then
+    log "Error bringing up interface. dmesg:"
+    dmesg | tail -n 20 > /dev/console
+    exit 0
+fi
+
+log "Starting wpa_supplicant on \$WLAN_IFACE..."
+mkdir -p /var/run/wpa_supplicant
+wpa_supplicant -B -i "\$WLAN_IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf
+
+log "Waiting for connection to SSID: $xwifissid"
+# Wait up to 30 seconds for a connection
+for i in \$(seq 1 30); do
+    if wpa_cli -i "\$WLAN_IFACE" status | grep -q "wpa_state=COMPLETED"; then
+        log "Successfully connected to WiFi."
+        # Standard initramfs networking scripts should now pick up the interface
+        # and configure IP (DHCP or static from IP= boot arg)
+        exit 0
+    fi
+    sleep 1
+done
+
+log "Warning: Failed to connect to WiFi network."
+exit 0
+EOF
+        chmod +x /etc/initramfs-tools/scripts/init-premount/wifi
+    fi
+
     #
     # Configure dropbear if requested
     #
     if [ $xssh -eq 1 ]
     then
 	echo "> Configure SSH"
-	sed -i "s#\#DROPBEAR_OPTIONS=\"\"#DROPBEAR_OPTIONS=\"-I $xsshtimeout -j -k -s -p $xsshport -c bash -r /etc/dropbear/dropbear_ed25519_host_key\"#" /etc/dropbear/initramfs/dropbear.conf
+	sed -i "s#\\#DROPBEAR_OPTIONS=\"\"#DROPBEAR_OPTIONS=\"-I $xsshtimeout -j -k -s -p $xsshport -c sh -r /etc/dropbear/dropbear_ed25519_host_key\"#" /etc/dropbear/initramfs/dropbear.conf
 	echo "> Copy authorized keys file from '$xauthkeys'"
 	cp $xauthkeys /etc/dropbear/initramfs/authorized_keys
 	if [ $xunique -eq 0 ]
@@ -523,6 +824,8 @@ function domkinitramfs() {
     touch /usr/local/bin/sdmnull  # Used for nopwd
     update-initramfs -u
     rm -f /usr/local/bin/sdmnull
+    [ ! -f /etc/sdm/assets/cryptroot/$xkeyfile ] && cp $xkeyfile /etc/sdm/assets/cryptroot
+    xkeyfile="$(basename $xkeyfile)"
 }
 
 function doupdateconfig() {
@@ -580,6 +883,11 @@ xsshport="22"
 xsshtimeout="3600"
 xtries="0"
 xunique=0
+xwifi=0
+xwifissid=""
+xwifipsk=""
+xwificountry=""
+xwifidriver=""
 src=$(dirname "$(realpath "$0")")
 parsecmd $0 "$*"
 
@@ -620,6 +928,9 @@ do
 	doapt)
 	    [ $xssh -eq 1 ] && db="dropbear-initramfs dropbear-bin" || db=""
 	    apps="cryptsetup cryptsetup-initramfs cryptsetup-bin $db"
+        if [ $xwifi -eq 1 ]; then
+            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill"
+        fi
 	    echo "Install $apps"
 	    if [ $xssh -eq 1 ]
 	    then
@@ -688,7 +999,7 @@ fi
 
 if [ $xreboot -eq 1 ]
 then
-    wait_startup_complete "sdm-cryptoconfig: Wait for system startup to complete"
+    wait_startup_complete "sdm-cryptconfig: Wait for system startup to complete"
     secs=10
     logger "sdm-cryptconfig: System will restart in $secs seconds"
     echo "" > /dev/console
