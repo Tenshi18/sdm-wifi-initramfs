@@ -438,7 +438,83 @@ SCRIPTEOF
 }
 
 function doconfiginitramfs() {
+    echo "DEBUG: sdmcryptfs file: $(ls -l /usr/local/bin/sdmcryptfs)" >&2
     local kcmd="" knopwd="" kskip=""
+
+    [ $xnopwd -eq 1 ] && kskip="&& /bin/false"
+    echo "> Create /usr/bin/sdmluksunlock; runs in initramfs to unlock rootfs"
+    cat > /usr/bin/sdmluksunlock <<EOF
+#!/bin/bash
+#
+# called when it's time to read the LUKS unlock key, which is echoed to stdout/read by caller
+#
+trydisks()
+{
+    echo "" >/dev/console
+    echo "> sdmluksunlock: Looking for USB disk with luks Key file '\${kfn}'" >/dev/console
+    echo "" >/dev/console
+    while :; do
+	sleep 1
+	while read usbpartition
+	do
+	    usbdevice=\$(readlink -f \$usbpartition)
+	    if mount -t vfat \$usbdevice /mnt 2>/dev/null
+	    then
+		echo "> Mounted disk \$usbdevice" >/dev/console
+		if [ -e /mnt/\$kfn ]
+		then
+		    echo "> Found Key file '\$kfn'" >/dev/console
+		    echo "> Unlocking rootfs" >/dev/console
+		    cat /mnt/\$kfn   #cat to sdmluksunlock caller for unlock
+		    umount \$usbdevice >/dev/null 2>&1 || continue
+		    echo "> sdmluksunlock: Kill askpass; Ignore 'Killed' message" >/dev/console
+		    aps=\$(ps e | grep askpass | grep -v grep | awk '{print \$1}')
+		    [ "\$aps" != "" ] && kill -KILL \$aps >/dev/null 2>/dev/null
+		    exit
+		else
+		    echo "% sdmluksunlock: Key '\${kfn%.lek}' not found on this disk" >/dev/console
+		    umount \$usbdevice >/dev/null 2>&1 || continue
+		fi
+	    else
+                echo "% sdmluksunlock: This disk does not have a vfat partition" >/dev/console
+		umount \$usbdevice >/dev/null 2>&1 || continue
+	    fi
+	done < <(compgen -G "/dev/disk/by-id/usb-*-part1")
+    done
+    return 0
+}
+
+set -e
+mkdir -p /mnt
+
+if [ "\$CRYPTTAB_KEY" != "" ]
+then
+    kfn=\$(basename \$CRYPTTAB_KEY)
+    kfn=\${kfn%.lek}.lek
+fi
+
+if [[ "\$kfn" != "" ]]
+then
+    if [[ "\$2" == "trydisks" ]]
+    then
+        touch /tmp/ftrydisk
+        trydisks
+        exit
+    else
+        [ ! -f /tmp/ftrydisk ] && ( sdmluksunlock \$CRYPTTAB_KEY trydisks </dev/null & )
+    fi
+fi
+
+echo "" >/dev/console
+/lib/cryptsetup/askpass "Insert USB Keyfile Disk or type passphrase then press ENTER:"
+aps=\$(ps e | grep trydisks | grep -v grep | awk '{print \$1}')
+[ "\$aps" != "" ] && kill -KILL \$aps >/dev/null 2>/dev/null
+exit
+EOF
+    chmod 755 /usr/bin/sdmluksunlock
+    echo "> Create /etc/initramfs-tools/hooks/luks-hooks"
+    [ "$xkeyfile" != "" ] && kcmd="copy_file text /etc/sdm/assets/cryptroot/$xkeyfile /etc/$xkeyfile"
+    [ $xnopwd -eq 1 ] && knopwd="copy_file text /usr/local/bin/sdmnull /etc/sdmnopwd"
 
     # These both need to be set on initramfs-tools 0.142+rpt1 and earlier. This assumes OK. Remove uncommented line for earlier initramfs-tools
     echo "> Update initramfs configuration for 'MODULES=most' and 'update_initramfs=all'"
@@ -450,7 +526,10 @@ function doconfiginitramfs() {
 #*  sed -i "s/^update_initramfs=yes/update_initramfs=all/" /etc/initramfs-tools/update-initramfs.conf
 
     echo "> Create luks hook to copy sdmcryptfs and keyfile to initramfs"
-    cat > /etc/initramfs-tools/hooks/luks-hooks <<'EOF'
+    [ $xnopwd -eq 1 ] && knopwd="copy_file text /usr/local/bin/sdmnull /etc/sdmnopwd"
+    cat > /etc/initramfs-tools/hooks/luks-hooks <<EOF
+
+
 #!/bin/sh
 #
 # Copy sdmcryptfs and sdmkeyfile to initramfs for sdm LUKS support
@@ -460,10 +539,10 @@ PREREQ=""
 
 prereqs()
 {
-    echo "$PREREQ"
+    echo "\$PREREQ"
 }
 
-case $1 in
+case \$1 in
 prereqs)
     prereqs
     exit 0
@@ -472,25 +551,19 @@ esac
 
 . /usr/share/initramfs-tools/hook-functions
 
-if [ -f /usr/local/bin/sdmcryptfs ]; then
-    copy_exec /usr/local/bin/sdmcryptfs /usr/bin
-fi
-
-if [ -f /etc/sdmkeyfile ] && [ "$(cat /etc/sdmkeyfile)" != "" ]; then
-    mkdir -p "$DESTDIR/etc/sdm/assets/cryptroot"
-    cp "/etc/sdm/assets/cryptroot/$(cat /etc/sdmkeyfile)" "$DESTDIR/etc/sdm/assets/cryptroot"
-fi
-
-# Copy keyfile-related stuff
-if [ -f /usr/bin/sdmluksunlock ]; then
-    copy_exec /usr/bin/sdmluksunlock /usr/bin
-else
-    # In case not there (e.g., if sdm not used), create a stub so crypttab works
-    echo '#!/bin/sh\nexit 1' > "$DESTDIR/usr/bin/sdmluksunlock"
-    chmod 755 "$DESTDIR/usr/bin/sdmluksunlock"
-fi
-
-copy_exec /usr/bin/findfs /usr/bin
+# Ensure bash is available for sdmcryptfs and other scripts that need it.
+copy_exec /usr/sbin/resize2fs /usr/sbin
+copy_exec /usr/sbin/fdisk /usr/sbin
+copy_exec /usr/sbin/cryptsetup /usr/sbin
+copy_exec /usr/bin/bash /usr/bin
+copy_file text /usr/local/bin/sdmcryptfs /usr/bin
+# OK if this fails; means it was copied due to keyscript in crypttab and copied in /usr/share/initramfs-tools/hooks/cryptroot
+copy_file text /usr/bin/sdmluksunlock || true
+copy_file text /etc/mappername
+copy_file text /etc/sdmcrypto
+copy_file text /etc/sdmkeyfile
+$kcmd
+$knopwd
 EOF
 
     if [ $xnopwd -eq 0 ]; then
@@ -504,6 +577,33 @@ EOF
     fi
     chmod 755 /etc/initramfs-tools/hooks/luks-hooks
 
+    echo "> Update /etc/initramfs-tools/modules to include crypto '$xcrypto' modules"
+    case "$xcrypto" in
+	xchacha)
+	    cat >> /etc/initramfs-tools/modules <<EOF
+algif_skcipher
+xchacha20
+adiantum
+aes_arm
+sha256
+nhpoly1305
+dm-crypt
+EOF
+	    ;;
+	aes|aes-*)
+	    cat >> /etc/initramfs-tools/modules <<EOF
+algif_skcipher
+aes_arm64
+aes_ce_blk
+aes_ce_ccm
+aes_ce_cipher
+sha256_arm64
+cbc
+dm-crypt
+EOF
+	    ;;
+    esac
+    
     if [ $xwifi -eq 1 ]
     then
         # Prepare Pi5 firmware before doing anything else
@@ -518,6 +618,8 @@ EOF
         echo "> Creating WiFi hook for initramfs"
         cat > /etc/initramfs-tools/hooks/wifi <<EOF
 #!/bin/sh
+
+echo "DEBUG: luks-hooks running" >&2
 
 PREREQ=""
 prereqs()
@@ -567,6 +669,8 @@ EOF
         echo "> Creating WiFi script for initramfs"
         cat > /etc/initramfs-tools/scripts/init-premount/wifi <<EOF
 #!/bin/sh
+
+echo "DEBUG: luks-hooks running" >&2
 
 PREREQ=""
 prereqs()
@@ -660,7 +764,8 @@ EOF
     if [ $xssh -eq 1 ]
     then
 	echo "> Configure SSH"
-	sed -i "s#\#DROPBEAR_OPTIONS=\"\"#DROPBEAR_OPTIONS=\"-I $xsshtimeout -j -k -s -p $xsshport -c sh -r /etc/dropbear/dropbear_ed25519_host_key\"#" /etc/dropbear/initramfs/dropbear.conf
+	# Disable idle timeout (-I 0) to prevent SSH connection from dropping during long sdmcryptfs operations.
+	sed -i "s#\#DROPBEAR_OPTIONS=\"\"#DROPBEAR_OPTIONS=\"-I 0 -j -k -s -p $xsshport -c bash -r /etc/dropbear/dropbear_ed25519_host_key\"#" /etc/dropbear/initramfs/dropbear.conf
 	echo "> Copy authorized keys file from '$xauthkeys'"
 	cp $xauthkeys /etc/dropbear/initramfs/authorized_keys
 	if [ $xunique -eq 0 ]
@@ -781,9 +886,9 @@ do
     case "$o" in
 	doapt)
 	    [ $xssh -eq 1 ] && db="dropbear-initramfs dropbear-bin" || db=""
-	    apps="cryptsetup cryptsetup-initramfs cryptsetup-bin $db"
+	    apps="cryptsetup cryptsetup-initramfs cryptsetup-bin util-linux bash $db"
         if [ $xwifi -eq 1 ]; then
-            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill"
+            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill"    
         fi
 	    echo "Install $apps"
 	    if [ $xssh -eq 1 ]
