@@ -451,7 +451,9 @@ SCRIPTEOF
     chmod +x /etc/initramfs-tools/scripts/init-premount/01-unblock-wifi
 }
 
+
 function doconfiginitramfs() {
+    echo "DEBUG: sdmcryptfs file: $(ls -l /usr/local/bin/sdmcryptfs)" >&2
     local kcmd="" knopwd=""
 
     # These both need to be set on initramfs-tools 0.142+rpt1 and earlier. This assumes OK. Remove uncommented line for earlier initramfs-tools
@@ -464,7 +466,7 @@ function doconfiginitramfs() {
 #*  sed -i "s/^update_initramfs=yes/update_initramfs=all/" /etc/initramfs-tools/update-initramfs.conf
 
     echo "> Create /usr/bin/sdmluksunlock; runs in initramfs to unlock rootfs"
-    cat > /usr/bin/sdmluksunlock <<EOF
+    cat > /usr/bin/sdmluksunlock <<'EOF'
 #!/bin/bash
 #
 # called when it's time to read the LUKS unlock key, which is echoed to stdout/read by caller
@@ -472,35 +474,35 @@ function doconfiginitramfs() {
 trydisks()
 {
     echo "" >/dev/console
-    echo "> sdmluksunlock: Looking for USB disk with luks Key file '\${kfn}'" >/dev/console
+    echo "> sdmluksunlock: Looking for USB disk with luks Key file '${kfn}'" >/dev/console
     echo "" >/dev/console
     while :; do
-	sleep 1
-	while read usbpartition
-	do
-	    usbdevice=\$(readlink -f \$usbpartition)
-	    if mount -t vfat \$usbdevice /mnt 2>/dev/null
-	    then
-		echo "> Mounted disk \$usbdevice" >/dev/console
-		if [ -e /mnt/\$kfn ]
-		then
-		    echo "> Found Key file '\$kfn'" >/dev/console
-		    echo "> Unlocking rootfs" >/dev/console
-		    cat /mnt/\$kfn   #cat to sdmluksunlock caller for unlock
-		    umount \$usbdevice >/dev/null 2>&1 || continue
-		    echo "> sdmluksunlock: Kill askpass; Ignore 'Killed' message" >/dev/console
-		    aps=\$(ps e | grep askpass | grep -v grep | awk '{print \$1}')
-		    [ "\$aps" != "" ] && kill -KILL \$aps >/dev/null 2>/dev/null
-		    exit
-		else
-		    echo "% sdmluksunlock: Key '\${kfn%.lek}' not found on this disk" >/dev/console
-		    umount \$usbdevice >/dev/null 2>&1 || continue
-		fi
-	    else
+        sleep 1
+        while read usbpartition
+        do
+            usbdevice=$(readlink -f $usbpartition)
+            if mount -t vfat $usbdevice /mnt 2>/dev/null
+            then
+                echo "> Mounted disk $usbdevice" >/dev/console
+                if [ -e /mnt/$kfn ]
+                then
+                    echo "> Found Key file '$kfn'" >/dev/console
+                    echo "> Unlocking rootfs" >/dev/console
+                    cat /mnt/$kfn   #cat to sdmluksunlock caller for unlock
+                    umount $usbdevice >/dev/null 2>&1 || continue
+                    echo "> sdmluksunlock: Kill askpass; Ignore 'Killed' message" >/dev/console
+                    aps=$(ps e | grep askpass | grep -v grep | awk '{print $1}')
+                    [ "$aps" != "" ] && kill -KILL $aps >/dev/null 2>/dev/null
+                    exit
+                else
+                    echo "% sdmluksunlock: Key '${kfn%.lek}' not found on this disk" >/dev/console
+                    umount $usbdevice >/dev/null 2>&1 || continue
+                fi
+            else
                 echo "% sdmluksunlock: This disk does not have a vfat partition" >/dev/console
-		umount \$usbdevice >/dev/null 2>&1 || continue
-	    fi
-	done < <(compgen -G "/dev/disk/by-id/usb-*-part1")
+                umount $usbdevice >/dev/null 2>&1 || continue
+            fi
+        done < <(compgen -G "/dev/disk/by-id/usb-*-part1")
     done
     return 0
 }
@@ -508,28 +510,28 @@ trydisks()
 set -e
 mkdir -p /mnt
 
-if [ "\$CRYPTTAB_KEY" != "" ]
+if [ "$CRYPTTAB_KEY" != "" ]
 then
-    kfn=\$(basename \$CRYPTTAB_KEY)
-    kfn=\${kfn%.lek}.lek
+    kfn=$(basename $CRYPTTAB_KEY)
+    kfn=${kfn%.lek}.lek
 fi
 
-if [[ "\$kfn" != "" ]]
+if [[ "$kfn" != "" ]]
 then
-    if [[ "\$2" == "trydisks" ]]
+    if [[ "$2" == "trydisks" ]]
     then
         touch /tmp/ftrydisk
         trydisks
         exit
     else
-        [ ! -f /tmp/ftrydisk ] && ( sdmluksunlock \$CRYPTTAB_KEY trydisks </dev/null & )
+        [ ! -f /tmp/ftrydisk ] && ( sdmluksunlock $CRYPTTAB_KEY trydisks </dev/null & )
     fi
 fi
 
 echo "" >/dev/console
 /lib/cryptsetup/askpass "Insert USB Keyfile Disk or type passphrase then press ENTER:"
-aps=\$(ps e | grep trydisks | grep -v grep | awk '{print \$1}')
-[ "\$aps" != "" ] && kill -KILL \$aps >/dev/null 2>/dev/null
+aps=$(ps e | grep trydisks | grep -v grep | awk '{print $1}')
+[ "$aps" != "" ] && kill -KILL $aps >/dev/null 2>/dev/null
 exit
 EOF
     chmod 755 /usr/bin/sdmluksunlock
@@ -549,7 +551,7 @@ prereqs()
     echo "$PREREQ"
 }
 
-case $1 in
+case \$1 in
 prereqs)
     prereqs
     exit 0
@@ -583,13 +585,17 @@ if [ -f /usr/bin/sdmluksunlock ]; then
     copy_exec /usr/bin/sdmluksunlock /usr/bin
 else
     # In case not there (e.g., if sdm not used), create a stub so crypttab works
-    echo '#!/bin/sh\nexit 1' > "$DESTDIR/usr/bin/sdmluksunlock"
+    echo '#!/bin/sh
+exit 1' > "$DESTDIR/usr/bin/sdmluksunlock"
     chmod 755 "$DESTDIR/usr/bin/sdmluksunlock"
 fi
 
 copy_exec /usr/bin/findfs /usr/bin
-$kcmd
-$knopwd
+EOF
+
+    [ -n "$kcmd" ] && echo "$kcmd" >> /etc/initramfs-tools/hooks/luks-hooks
+    [ -n "$knopwd" ] && echo "$knopwd" >> /etc/initramfs-tools/hooks/luks-hooks
+    cat >> /etc/initramfs-tools/hooks/luks-hooks <<'EOF'
 exit 0
 EOF
 
@@ -606,8 +612,8 @@ EOF
 
     echo "> Update /etc/initramfs-tools/modules to include crypto '$xcrypto' modules"
     case "$xcrypto" in
-	xchacha)
-	    cat >> /etc/initramfs-tools/modules <<EOF
+        xchacha)
+            cat >> /etc/initramfs-tools/modules <<EOF
 algif_skcipher
 xchacha20
 adiantum
@@ -616,9 +622,9 @@ sha256
 nhpoly1305
 dm-crypt
 EOF
-	    ;;
-	aes|aes-*)
-	    cat >> /etc/initramfs-tools/modules <<EOF
+            ;;
+        aes|aes-*)
+            cat >> /etc/initramfs-tools/modules <<EOF
 algif_skcipher
 aes_arm64
 aes_ce_blk
@@ -628,7 +634,7 @@ sha256_arm64
 cbc
 dm-crypt
 EOF
-	    ;;
+            ;;
     esac
 
     echo "> Enable KEYMAP=y in /etc/initramfs-tools/initramfs.conf"
@@ -638,15 +644,15 @@ EOF
     #
     if [[ $xssh -eq 1 ]] && [[ "${xipaddr}${xgateway}${xnetmask}${xhostname}" != "" ]]
     then
-	ips="IP="   # Configure DNS, gateway, hostname, ipaddr, netmask
-	[ "$xipaddr" != "" ] && ips="${ips}${xipaddr}:" || ips="${ips}:"
-	ips="${ips}:"   # For the mystery 'server' value
-	[ "$xgateway" != "" ] && ips="${ips}${xgateway}:" || ips="${ips}:"
-	[ "$xnetmask" != "" ] && ips="${ips}${xnetmask}:" || ips="${ips}:"
-	[ "$xhostname" != "" ] && ips="${ips}${xhostname}:" || ips="${ips}:"
-	ips=${ips%:}
-	#echo "ipstatement: $ips"
-	echo "$ips" >> /etc/initramfs-tools/initramfs.conf
+        ips="IP="   # Configure DNS, gateway, hostname, ipaddr, netmask
+        [ "$xipaddr" != "" ] && ips="${ips}${xipaddr}:" || ips="${ips}:"
+        ips="${ips}:"   # For the mystery 'server' value
+        [ "$xgateway" != "" ] && ips="${ips}${xgateway}:" || ips="${ips}:"
+        [ "$xnetmask" != "" ] && ips="${ips}${xnetmask}:" || ips="${ips}:"
+        [ "$xhostname" != "" ] && ips="${ips}${xhostname}:" || ips="${ips}:"
+        ips=${ips%:}
+        #echo "ipstatement: $ips"
+        echo "$ips" >> /etc/initramfs-tools/initramfs.conf
     fi
 
     if [ $xwifi -eq 1 ]
@@ -657,12 +663,14 @@ EOF
 
         echo "> Add required kernel modules for WiFi to initramfs"
         for mod in brcmfmac brcmfmac-wcc brcmutil cfg80211; do
-            grep -q "^$mod\$" /etc/initramfs-tools/modules || echo "$mod" >> /etc/initramfs-tools/modules
+            grep -q "^$mod$" /etc/initramfs-tools/modules || echo "$mod" >> /etc/initramfs-tools/modules
         done
 
         echo "> Creating WiFi hook for initramfs"
         cat > /etc/initramfs-tools/hooks/wifi <<EOF
 #!/bin/sh
+
+echo "DEBUG: luks-hooks running" >&2
 
 PREREQ=""
 prereqs()
@@ -712,6 +720,8 @@ EOF
         echo "> Creating WiFi script for initramfs"
         cat > /etc/initramfs-tools/scripts/init-premount/wifi <<EOF
 #!/bin/sh
+
+echo "DEBUG: luks-hooks running" >&2
 
 PREREQ=""
 prereqs()
@@ -771,7 +781,7 @@ fi
 
 log "Bringing up \$WLAN_IFACE..."
 ip link set \$WLAN_IFACE up
-if [ \$? -ne 0 ]; then
+if [ $? -ne 0 ]; then
     log "Error bringing up interface. dmesg:"
     dmesg | tail -n 20 > /dev/console
     exit 0
@@ -804,20 +814,20 @@ EOF
     #
     if [ $xssh -eq 1 ]
     then
-	echo "> Configure SSH"
-	sed -i "s#\\#DROPBEAR_OPTIONS=\"\"#DROPBEAR_OPTIONS=\"-I $xsshtimeout -j -k -s -p $xsshport -c sh -r /etc/dropbear/dropbear_ed25519_host_key\"#" /etc/dropbear/initramfs/dropbear.conf
-	echo "> Copy authorized keys file from '$xauthkeys'"
-	cp $xauthkeys /etc/dropbear/initramfs/authorized_keys
-	if [ $xunique -eq 0 ]
-	then
-	    echo "> Convert openSSH host key for use in dropbear/initramfs"
-	    dropbearconvert openssh dropbear /etc/ssh/ssh_host_ed25519_key /etc/dropbear/initramfs/dropbear_ed25519_host_key
-	else
-	    echo "> Use unique SSH host key in dropbear/initramfs"
-	fi
+	    echo "> Configure SSH"
+	    # Disable idle timeout (-I 0) to prevent SSH connection from dropping during long sdmcryptfs operations.
+	    sed -i "s#\\#DROPBEAR_OPTIONS=\"\"#DROPBEAR_OPTIONS=\"-I 0 -j -k -s -p $xsshport -c bash -r /etc/dropbear/dropbear_ed25519_host_key\"#" /etc/dropbear/initramfs/dropbear.conf
+	    echo "> Copy authorized keys file from '$xauthkeys'"
+	    cp $xauthkeys /etc/dropbear/initramfs/authorized_keys
+	    if [ $xunique -eq 0 ]
+	    then
+	        echo "> Convert openSSH host key for use in dropbear/initramfs"
+	        dropbearconvert openssh dropbear /etc/ssh/ssh_host_ed25519_key /etc/dropbear/initramfs/dropbear_ed25519_host_key
+	    else
+	        echo "> Use unique SSH host key in dropbear/initramfs"
+	    fi
     fi
 }
-
 function domkinitramfs() {
     echo "> Update initramfs with the rootfs encryption settings in place"
     logifsdm "Update initramfs with the rootfs encryption settings in place"
@@ -927,9 +937,9 @@ do
     case "$o" in
 	doapt)
 	    [ $xssh -eq 1 ] && db="dropbear-initramfs dropbear-bin" || db=""
-	    apps="cryptsetup cryptsetup-initramfs cryptsetup-bin $db"
+	    apps="cryptsetup cryptsetup-initramfs cryptsetup-bin util-linux bash $db"
         if [ $xwifi -eq 1 ]; then
-            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill"
+            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill"    
         fi
 	    echo "Install $apps"
 	    if [ $xssh -eq 1 ]
