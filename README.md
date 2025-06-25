@@ -1,3 +1,47 @@
+# sdm-wifi-initramfs (WIP, I guess)
+Raspberry Pi SSD/SD Card Image Manager — initramfs SSH over WiFi network fork
+
+## Changes from original project
+
+The only differences are in the `sdm-cryptconfig` script.
+
+---
+
+New switches to sdm-cryptconfig include:
+
+* `--wifi-ssid ssid` — Specifies the WiFi SSID to connect to in the initramfs environment. Required for WiFi support.
+* `--wifi-psk passphrase` — Specifies the WiFi passphrase (pre-shared key) for the SSID. Required for WiFi support.
+* `--wifi-country countrycode` — Sets the two-letter country code for WiFi regulatory domain (e.g., `US`, `RU`). Required for WiFi support.
+* `--wifi-driver driver` — Specifies the WiFi kernel driver module to include in the initramfs. Default is `brcmfmac`. Optional, but may be needed for non-standard WiFi hardware.
+
+**Note:**
+If any of `--wifi-ssid`, `--wifi-psk`, or `--wifi-country` are specified, all three must be provided. WiFi support enables remote unlocking over wireless in the initramfs environment.
+
+---
+
+In addition to the new switches, the modified `sdm-cryptconfig` introduces **WiFi Unblock Logic**:
+- Changes to `sdm-cryptconfig` add hooks and scripts to ensure WiFi is unblocked (rfkill) in initramfs, including masking systemd-rfkill and setting the country code via `raspi-config`. This logic might be improved in the future.
+
+---
+
+## Backward Compatibility
+
+All original switches and behaviors are preserved. The new WiFi-related switches and logic are **optional** and only activated if WiFi parameters are provided.
+
+---
+
+## Example Usage
+
+To enable SSH unlocking over WiFi in initramfs, you might use:
+
+```sh
+sdm-cryptconfig   --ssh   --authorized-keys /path/to/authorized_keys   --wifi-ssid "MyNetwork"   --wifi-psk "MySecretPass"   --wifi-country "US"
+```
+
+---
+
+# Original project description
+
 # sdm
 Raspberry Pi SSD/SD Card Image Manager
 
