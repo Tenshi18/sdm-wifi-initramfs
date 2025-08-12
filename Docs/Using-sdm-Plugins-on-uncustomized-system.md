@@ -5,10 +5,10 @@ So you have a system that you configured up without using sdm, and now you want 
 It's pretty simple. Here's how:
 
 ```
-curl -L https://raw.githubusercontent.com/gitbls/sdm/master/EZsdmInstaller | bash
+curl -L https://raw.githubusercontent.com/gitbls/sdm/master/install-sdm | bash
 ```
 
-EZsdmInstaller will:
+install-sdm will:
 
 * Download and install sdm into `/usr/local/sdm`
 * Create and populate the directory tree `/etc/sdm`

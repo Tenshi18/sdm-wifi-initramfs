@@ -34,8 +34,10 @@ function logit {
     # Writes message to /etc/sdm/history
     #
     # $1="message string"
+    # $2=/path/to/log [/etc/sdm/history]
     #
-    [ -f $SDMPT/etc/sdm/history ] && echo "$(thisdate) $1" >> $SDMPT/etc/sdm/history
+    msg="$1" logf=${2:-/etc/sdm/history}
+    [ -f $SDMPT/$logf ] && echo "$(thisdate) $msg" >> $SDMPT/$logf
 }
 
 function logtoboth() {
@@ -44,18 +46,19 @@ function logtoboth() {
     #
     # $1="message string" which will be split up across multiple lines if needed
     # $2="nosplit" if lines should not be split up
+    # $3=/path/to/logfile for alternate log
     #
-    local msg="$1"
+    local msg="$1" mods=$2 logf=${3:-/etc/sdm/history}
     local str=() i spc=""
-    if [[ ${#msg} -le $logwidth ]] || [[ "$2" == "nosplit" ]]
+    if [[ ${#msg} -le $logwidth ]] || [[ "$mods" == "nosplit" ]]
     then
-	logit "$msg"
+	logit "$msg" $logf
 	echo "$msg"
     else
 	readarray -t str <<< $(fold -s -w$logwidth <<< $(echo "$msg"))
 	for (( i=0 ; i < ${#str[@]} ; i++))
 	do
-	    logit "${spc}${str[$i]}"
+	    logit "${spc}${str[$i]}" $logf
 	    echo "${spc}${str[$i]}"
 	    spc="  "
 	done
@@ -137,17 +140,30 @@ function extractlogs() {
     do
 	if [ -f $SDMPT/etc/sdm/$fn ]
 	then
-	    if [ -f $rdir/$fn ]
-	    then
-		logtoboth "% Delete existing host file $rdir/$fn"
-		rm -f $rdir/$fn
-	    fi
-	    logtoboth "> Copy /etc/sdm/$fn to host file $rdir/$fn"
+	    logtoboth ">   /etc/sdm/$fn to host $rdir/$fn"
 	    cp $SDMPT/etc/sdm/$fn $rdir
 	else
-	    logtoboth "% $SDMPT/etc/sdm/$fn not present"
+	    logtoboth "%   /etc/sdm/$fn not present"
 	fi
     done
+    if [ "$extractscript" != "" ]
+    then
+	[ -f $extractscript ] || logtobothex "? Cannot find extract script '$extractscript'"
+	$extractscript
+    fi
+}
+
+function setdpkgforce() {
+    cat > /etc/apt/apt.conf.d/02sdm-myconf <<EOF
+    Dpkg::Options {
+   "--force-confdef";
+   "--force-confold";
+}
+EOF
+}
+
+function clrdpkgforce() {
+    rm -f /etc/apt/apt.conf.d/02sdm-myconf
 }
 
 function doapt() {
@@ -182,6 +198,8 @@ function doapt() {
 	else
 	    # Technique from https://unix.stackexchange.com/questions/14270/get-exit-status-of-process-thats-piped-to-another/73180#73180
 	    { { { { DEBIAN_FRONTEND=noninteractive $aptcmd -o=Dpkg::Use-Pty=0 $options $1 2>&1; echo $? >&3; } | pline >&4; } 3>&1; } | { read xs; exit $xs; } } 4>&1
+	    # This V doesn't work when passed as argument ;(
+	    #runcaptureout "DEBIAN_FRONTEND=noninteractive $aptcmd -o=Dpkg::Use-Pty=0 $options $1"
 	    sts=$?
 	fi
     fi
@@ -204,13 +222,13 @@ function runcaptureout() {
     #
     # Run command, capturing output via logtoboth
     #
-    local cmd="$1"
+    local cmd="$1" outlog="$2"
 
     function pline() {
         local line
         while read line
         do
-            logtoboth "$line"
+            logtoboth "$line" $outlog
         done
     }
 
@@ -296,13 +314,6 @@ function getpipver() {
 }
 
 function installviapip() {
-    function pline() {
-	local line
-	while read line
-	do
-            echo "$(thisdate) $line" >> /etc/sdm/apt.log
-	done
-    }
     # $1: package name
     # $2: /path/to/pip3 in the venv
     # $3: pip install options
@@ -318,11 +329,10 @@ function installviapip() {
 	$vpip3 install --ignore-installed $options $pkg 2>&1 | tee -a /etc/sdm/apt.log
 	sts=$?
     else
-	# Technique from https://unix.stackexchange.com/questions/14270/get-exit-status-of-process-thats-piped-to-another/73180#73180
-	{ { { { $vpip3 install --ignore-installed $options $pkg 2>&1; echo $? >&3; } | pline >&4; } 3>&1; } | { read xs; exit $xs; } } 4>&1
+	runcaptureout "$vpip3 install --ignore-installed $options $pkg"
 	sts=$?
     fi
-    [[ "$poptions" =~ "nologdates" ]] && td="" || td="$(thisdate) "
+    #[[ "$poptions" =~ "nologdates" ]] && td="" || td="$(thisdate) "
     echo "${td}[Done] [$sts]" >> /etc/sdm/apt.log
     return $sts
 }
@@ -561,8 +571,13 @@ function is64bit() {
 }
 
 function ispdevp() {
-    local dev="$1"
-    [[ "$dev" =~ "mmcblk" ]] || [[ "$dev" =~ "nvme" ]] && return 0 || return 1
+    local dev="$1" dn
+
+    for dn in mmcblk nvme $xspdev
+    do
+        [[ $dev =~ $dn ]] && return 0
+    done
+    return 1
 }
 
 function getspname() {
@@ -614,11 +629,23 @@ function writeconfig() {
 		     dgroups myuser nowaittimesync os pi1bootconf plugindebug poptions \
 		     raspiosver reboot fredact regensshkeys noreboot rebootwait \
 		     redocustomize sdmdir sdmflist showapt src swapsize \
-		     timezone virtmode vqemu custom1 custom2 custom3 custom4 plugins allplugins
+		     timezone virtmode vqemu xspdev custom1 custom2 custom3 custom4 plugins allplugins
     do
 	echo "$e:\"${!e}\"" >> $paramfile
     done
     [ -f $orgfile ] || cp -a $paramfile $orgfile
+}
+
+function get1config() {
+    local item="$1" cfile=$2 itemline val
+    itemline=$(grep $item $cfile)
+    if [ "$itemline" != "" ]
+    then
+	IFS=":" read item val <<< $itemline
+	echo "$(stripquotes "$val")"
+    else
+	echo ""
+    fi
 }
 
 function resetpluginlist() {
