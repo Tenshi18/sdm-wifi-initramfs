@@ -179,4 +179,3 @@ You can watch sdm in action <a href="https://youtu.be/CpntmXK2wpA">here</a> It's
 ## Platform Support Notes
 
 Several people have run into issues with using sdm on a Mac. Unless you are technical enough to sort out how to make it work, or care enough to permanently donate a Mac to the sdm project, <b>sdm is not supported on the Mac</b>.
-
