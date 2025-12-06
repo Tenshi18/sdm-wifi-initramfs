@@ -5,8 +5,6 @@ Raspberry Pi SSD/SD Card Image Manager — initramfs SSH over WiFi network fork
 
 The only differences are in the `sdm-cryptconfig` script.
 
----
-
 New switches to sdm-cryptconfig include:
 
 * `--wifi-ssid ssid` — Specifies the WiFi SSID to connect to in the initramfs environment. Required for WiFi support.
