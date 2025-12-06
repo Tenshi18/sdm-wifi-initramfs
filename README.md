@@ -35,7 +35,12 @@ All original switches and behaviors are preserved. The new WiFi-related switches
 To enable SSH unlocking over WiFi in initramfs, you might use:
 
 ```sh
-sdm-cryptconfig   --ssh   --authorized-keys /path/to/authorized_keys   --wifi-ssid "MyNetwork"   --wifi-psk "MySecretPass"   --wifi-country "US"
+sdm-cryptconfig \
+  --ssh \
+  --authorized-keys /path/to/authorized_keys \
+  --wifi-ssid "MyNetwork" \
+  --wifi-psk "MySecretPass" \
+  --wifi-country "US"
 ```
 
 ---
