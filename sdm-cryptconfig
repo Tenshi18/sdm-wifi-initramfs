@@ -278,6 +278,15 @@ fi
 systemctl disable sdm-cryptfs-cleanup
 rm -f /etc/systemd/system/sdm-cryptfs-cleanup.service
 rm -f /etc/systemd/system/sdm-auto-encrypt.service
+
+# Unmask systemd-rfkill if it was masked for WiFi initramfs support
+# This restores normal rfkill behavior after encryption setup is complete
+if systemctl is-enabled systemd-rfkill.service 2>/dev/null | grep -q masked; then
+    echolog "sdm-cryptfs-cleanup: Unmask systemd-rfkill service"
+    systemctl unmask systemd-rfkill.service >/dev/null 2>&1
+    systemctl unmask systemd-rfkill.socket >/dev/null 2>&1
+fi
+
 systemctl daemon-reload
 
 wait_startup_complete "sdm-cryptfs-cleanup: Wait for system startup to complete"
@@ -427,28 +436,25 @@ function setup_wifi_unblock() {
     echo "> Setting WiFi country to '$xwificountry' via raspi-config"
     raspi-config nonint do_wifi_country "$xwificountry" >/dev/null 2>&1
 
-    echo "> Masking systemd-rfkill service to prevent re-blocking"
+    # Temporarily mask systemd-rfkill during encryption setup to prevent re-blocking
+    # This will be unmasked by sdm-cryptfs-cleanup after encryption is complete
+    echo "> Temporarily masking systemd-rfkill service (will be restored after setup)"
     systemctl mask systemd-rfkill.service >/dev/null 2>&1
+    systemctl mask systemd-rfkill.socket >/dev/null 2>&1
 
-    echo "> Creating hooks to unblock WiFi in initramfs"
-    # Hook to copy rfkill binary
-    cat > /etc/initramfs-tools/hooks/unblock-wifi <<'HOOKEOF'
+    echo "> Creating hook to copy rfkill and iw to initramfs"
+    # rfkill and iw are used in the wifi init-premount script after driver loads
+    cat > /etc/initramfs-tools/hooks/wifi-tools <<'HOOKEOF'
 #!/bin/sh
 set -e
 . /usr/share/initramfs-tools/hook-functions
 copy_exec /usr/sbin/rfkill /usr/sbin
-HOOKEOF
-    chmod +x /etc/initramfs-tools/hooks/unblock-wifi
-
-    echo "> Creating script to unblock WiFi in initramfs"
-    cat > /etc/initramfs-tools/scripts/init-premount/01-unblock-wifi <<'SCRIPTEOF'
-#!/bin/sh
-if [ -x /usr/sbin/rfkill ]; then
-    echo "initramfs-unblock-wifi: Unblocking all wifi devices..." > /dev/console
-    /usr/sbin/rfkill unblock all
+# iw is used to set regulatory domain in initramfs
+if [ -x /usr/sbin/iw ]; then
+    copy_exec /usr/sbin/iw /usr/sbin
 fi
-SCRIPTEOF
-    chmod +x /etc/initramfs-tools/scripts/init-premount/01-unblock-wifi
+HOOKEOF
+    chmod +x /etc/initramfs-tools/hooks/wifi-tools
 }
 
 
@@ -595,9 +601,6 @@ EOF
 
     [ -n "$kcmd" ] && echo "$kcmd" >> /etc/initramfs-tools/hooks/luks-hooks
     [ -n "$knopwd" ] && echo "$knopwd" >> /etc/initramfs-tools/hooks/luks-hooks
-    cat >> /etc/initramfs-tools/hooks/luks-hooks <<'EOF'
-exit 0
-EOF
 
     if [ $xnopwd -eq 0 ]; then
         cat >> /etc/initramfs-tools/hooks/luks-hooks <<'EOF'
@@ -608,6 +611,9 @@ if [ -f /usr/local/bin/sdm-getty ]; then
 fi
 EOF
     fi
+
+    # Add exit 0 at the end of the hook script
+    echo "exit 0" >> /etc/initramfs-tools/hooks/luks-hooks
     chmod 755 /etc/initramfs-tools/hooks/luks-hooks
 
     echo "> Update /etc/initramfs-tools/modules to include crypto '$xcrypto' modules"
@@ -670,8 +676,6 @@ EOF
         cat > /etc/initramfs-tools/hooks/wifi <<EOF
 #!/bin/sh
 
-echo "DEBUG: luks-hooks running" >&2
-
 PREREQ=""
 prereqs()
 {
@@ -702,6 +706,7 @@ manual_add_modules $xwifidriver
 manual_add_modules mac80211
 
 # Create wpa_supplicant configuration
+# Note: PSK is stored in plaintext. Anyone with access to the initramfs can read it.
 mkdir -p \$DESTDIR/etc/wpa_supplicant
 cat > \$DESTDIR/etc/wpa_supplicant/wpa_supplicant.conf <<WPACFG
 ctrl_interface=/var/run/wpa_supplicant
@@ -720,8 +725,6 @@ EOF
         echo "> Creating WiFi script for initramfs"
         cat > /etc/initramfs-tools/scripts/init-premount/wifi <<EOF
 #!/bin/sh
-
-echo "DEBUG: luks-hooks running" >&2
 
 PREREQ=""
 prereqs()
@@ -753,6 +756,20 @@ log "${xwifidriver} module loaded."
 # Give udev time to react to the new modules
 [ -x /sbin/udevadm ] && udevadm settle
 
+# Unblock WiFi AFTER driver is loaded (rfkill needs the device to exist)
+if [ -x /usr/sbin/rfkill ]; then
+    log "Unblocking WiFi devices..."
+    /usr/sbin/rfkill unblock wlan 2>/dev/null || /usr/sbin/rfkill unblock all
+    # Small delay for rfkill to take effect
+    sleep 1
+fi
+
+# Set regulatory domain if iw is available
+if [ -x /usr/sbin/iw ]; then
+    log "Setting regulatory domain to $xwificountry..."
+    /usr/sbin/iw reg set $xwificountry 2>/dev/null || log "Warning: Failed to set regulatory domain"
+fi
+
 log "Waiting for network device for up to 20 seconds..."
 # Wait for interface to appear, max 20 seconds
 WLAN_IFACE=""
@@ -770,6 +787,8 @@ done
 
 if [ -z "\$WLAN_IFACE" ]; then
     log "Error: No wireless interface found. Dumping debug info."
+    log "rfkill status:"
+    [ -x /usr/sbin/rfkill ] && /usr/sbin/rfkill list > /dev/console 2>&1
     log "lsmod output:"
     lsmod > /dev/console
     log "dmesg for brcmfmac:"
@@ -781,7 +800,7 @@ fi
 
 log "Bringing up \$WLAN_IFACE..."
 ip link set \$WLAN_IFACE up
-if [ $? -ne 0 ]; then
+if [ \$? -ne 0 ]; then
     log "Error bringing up interface. dmesg:"
     dmesg | tail -n 20 > /dev/console
     exit 0
@@ -939,7 +958,7 @@ do
 	    [ $xssh -eq 1 ] && db="dropbear-initramfs dropbear-bin" || db=""
 	    apps="cryptsetup cryptsetup-initramfs cryptsetup-bin util-linux bash $db"
         if [ $xwifi -eq 1 ]; then
-            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill"    
+            apps="$apps wireless-tools wpasupplicant firmware-brcm80211 kmod rfkill iw"
         fi
 	    echo "Install $apps"
 	    if [ $xssh -eq 1 ]
