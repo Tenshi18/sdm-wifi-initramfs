@@ -366,6 +366,25 @@ function parsecmd() {
         [ -z "$xwifipsk" ] && errexit "? --wifi-psk is required when using WiFi"
         [ -z "$xwificountry" ] && errexit "? --wifi-country is required when using WiFi"
         [ -z "$xwifidriver" ] && xwifidriver="brcmfmac"
+        
+        # Validate wifi-driver: only alphanumeric, hyphen, underscore allowed (prevent command injection)
+        if [[ ! "$xwifidriver" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            errexit "? --wifi-driver contains invalid characters. Only alphanumeric, hyphen, and underscore allowed."
+        fi
+        
+        # Validate wifi-country: must be exactly 2 uppercase letters (ISO 3166-1 alpha-2)
+        if [[ ! "$xwificountry" =~ ^[A-Z]{2}$ ]]; then
+            errexit "? --wifi-country must be a 2-letter country code (e.g., US, RU, DE)"
+        fi
+        
+        # Validate wifi-ssid and wifi-psk: no newlines or quotes (prevent wpa_supplicant.conf injection)
+        if [[ "$xwifissid" == *$'\n'* ]] || [[ "$xwifissid" == *$'\r'* ]] || [[ "$xwifissid" == *'"'* ]]; then
+            errexit "? --wifi-ssid contains invalid characters (newlines or quotes not allowed)"
+        fi
+        if [[ "$xwifipsk" == *$'\n'* ]] || [[ "$xwifipsk" == *$'\r'* ]] || [[ "$xwifipsk" == *'"'* ]]; then
+            errexit "? --wifi-psk contains invalid characters (newlines or quotes not allowed)"
+        fi
+        
         xwifi=1
     fi
 }
@@ -702,7 +721,7 @@ if [ -d /lib/firmware/brcm ]; then cp -a /lib/firmware/brcm \$DESTDIR/lib/firmwa
 if [ -d /lib/firmware/cypress ]; then cp -a /lib/firmware/cypress \$DESTDIR/lib/firmware/; fi
 
 # Copy kernel modules. Dependencies should be handled automatically.
-manual_add_modules $xwifidriver
+manual_add_modules "$xwifidriver"
 manual_add_modules mac80211
 
 # Create wpa_supplicant configuration
@@ -744,7 +763,7 @@ log() {
 }
 
 log "Loading WiFi modules..."
-modprobe $xwifidriver
+modprobe "$xwifidriver"
 
 if ! lsmod | grep -q "${xwifidriver//-/_}"; then
     log "Error: ${xwifidriver} module failed to load."
@@ -767,7 +786,7 @@ fi
 # Set regulatory domain if iw is available
 if [ -x /usr/sbin/iw ]; then
     log "Setting regulatory domain to $xwificountry..."
-    /usr/sbin/iw reg set $xwificountry 2>/dev/null || log "Warning: Failed to set regulatory domain"
+    /usr/sbin/iw reg set "$xwificountry" 2>/dev/null || log "Warning: Failed to set regulatory domain"
 fi
 
 log "Waiting for network device for up to 20 seconds..."
